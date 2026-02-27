@@ -1,7 +1,7 @@
 from ErisPulse import sdk
 import aiohttp
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 class APIConfig:
     def __init__(self, name: str, url: str, supports_tags: bool, supports_pid: bool, supports_author: bool):
@@ -48,6 +48,7 @@ class Main:
         self.r18_pass = self.config.get("r18_pass", False)
         self.search_states: Dict[str, Dict] = {}
         self.timeout = 60
+        self._supported_sends_cache: Dict[str, Set[str]] = {}
 
     def _load_config(self) -> Dict:
         config = self.sdk.env.getConfig("SeTu")
@@ -60,6 +61,24 @@ class Main:
             self.sdk.env.setConfig("SeTu", default_config)
             return default_config
         return config
+
+    def _check_send_method(self, adapter_name: str, sender: Any, method: str) -> bool:
+        # 优先使用 list_sends 方法
+        if hasattr(self.adapter, 'list_sends'):
+            try:
+                if adapter_name not in self._supported_sends_cache:
+                    methods = self.adapter.list_sends(adapter_name)
+                    if methods:
+                        self._supported_sends_cache[adapter_name] = set(methods)
+                    else:
+                        self._supported_sends_cache[adapter_name] = set()
+                
+                return method in self._supported_sends_cache.get(adapter_name, set())
+            except Exception as e:
+                self.logger.debug(f"list_sends 查询失败，降级使用 hasattr: {e}")
+        
+        # 降级使用 hasattr
+        return hasattr(sender, method)
 
     @staticmethod
     def should_eager_load() -> bool:
@@ -435,11 +454,12 @@ class Main:
                 return json_data.get('data', [])
 
     async def _send_selected_images(self, data: Dict, selected_indices: List[int], results: List[Dict]):
+        adapter_name = data.get("self", {}).get("platform", None)
         sender = await self._get_adapter_sender(data)
         
-        has_html = hasattr(sender, 'Html')
-        has_markdown = hasattr(sender, 'Markdown')
-        has_image = hasattr(sender, 'Image')
+        has_html = self._check_send_method(adapter_name, sender, 'Html')
+        has_markdown = self._check_send_method(adapter_name, sender, 'Markdown')
+        has_image = self._check_send_method(adapter_name, sender, 'Image')
         
         for idx in selected_indices:
             img = results[idx]
@@ -473,15 +493,17 @@ class Main:
                 await self._send_text_response(data, f"图片发送失败: {img['title']}")
 
     async def _send_text_response(self, data: Dict, text: str):
+        adapter_name = data.get("self", {}).get("platform", None)
         sender = await self._get_adapter_sender(data)
-        if hasattr(sender, "Text"):
+        if self._check_send_method(adapter_name, sender, "Text"):
             await sender.Text(text)
         else:
             self.logger.warning(f"无法发送文本消息: {text}")
 
     async def _send_image_response(self, data: Dict, image_data: bytes):
+        adapter_name = data.get("self", {}).get("platform", None)
         sender = await self._get_adapter_sender(data)
-        if hasattr(sender, "Image"):
+        if self._check_send_method(adapter_name, sender, "Image"):
             await sender.Image(image_data)
         else:
             self.logger.warning("平台不支持图片发送")
@@ -497,13 +519,14 @@ class Main:
 
     async def _process_image_request(self, data: Dict):
         try:
+            adapter_name = data.get("self", {}).get("platform", None)
             sender = await self._get_adapter_sender(data)
             
-            has_html = hasattr(sender, 'Html')
-            has_markdown = hasattr(sender, 'Markdown')
-            has_image = hasattr(sender, 'Image')
+            has_html = self._check_send_method(adapter_name, sender, 'Html')
+            has_markdown = self._check_send_method(adapter_name, sender, 'Markdown')
+            has_image = self._check_send_method(adapter_name, sender, 'Image')
             
-            if hasattr(sender, "Text"):
+            if self._check_send_method(adapter_name, sender, "Text"):
                 msg_id_data = await sender.Text("收到了喵~正在为您准备图片喵~")
             else:
                 self.logger.warning("平台不支持文本发送")
@@ -539,7 +562,7 @@ class Main:
                         await sender.Text(f"图片链接: {image_url}")
                         self.logger.info("通过纯文本发送图片URL")
                     
-                    if hasattr(sender, "Edit"):
+                    if self._check_send_method(adapter_name, sender, "Edit"):
                         await sender.Edit(msg_id_data.get("message_id", ""), "准备好了喵~尽情欣赏吧~")
                     break
 
@@ -574,8 +597,9 @@ class Main:
         return adapter.Send.To("user" if detail_type == "private" else "group", datail_id)
 
     async def _send_warning_text(self, data: Dict, text: str):
+        adapter_name = data.get("self", {}).get("platform", None)
         sender = await self._get_adapter_sender(data)
-        if hasattr(sender, "Text"):
+        if self._check_send_method(adapter_name, sender, "Text"):
             await sender.Text(text)
             return
         else:

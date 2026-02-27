@@ -1,6 +1,6 @@
 [project]
-name = "ErisPulse-SeTu"     # 模块名称, 建议使用 ErisPulse-<模块名称> 的格式命名
-version = "1.2.1"
+name = "ErisPulse-SeTu"
+version = "1.2.2"
 description = "简单的色图获取模块"
 readme = "README.md"
 requires-python = ">=3.9"
